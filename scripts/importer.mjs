@@ -83,6 +83,25 @@ function normalizeDataPath(s) {
   }
 }
 
+function normalizeRelativePath(raw, basePath = "") {
+  const s = String(raw ?? "").replace(/\\/g, "/").trim();
+  if (!s) return "";
+  const parts = s.split("/");
+  const out = [];
+  for (const p of parts) {
+    if (!p || p === ".") continue;
+    if (p === "..") out.pop();
+    else out.push(p);
+  }
+  const normalized = out.join("/");
+  if (s.startsWith("../") && basePath) {
+    const base = String(basePath).replace(/^\/+/, "").replace(/\/+$/, "");
+    const joined = `${base}/${normalized}`;
+    return joined.replace(/\/+/g, "/");
+  }
+  return normalized;
+}
+
 
 function keyVariants(s) {
   const out = new Set();
@@ -249,9 +268,9 @@ function resolveAssetPath(basePath, fileIndex, name, { kind = "generic", allowNo
   if (!name) return null;
   const raw0 = String(name).trim();
   if (!raw0) return null;
-  const raw = raw0.replace(/\\/g, "/").replace(/^\//, "");
-  if (/^(data:|https?:)/i.test(raw)) return raw;
-  if (raw.startsWith("/files/")) return normalizeDataPath(raw);
+  const raw = normalizeRelativePath(raw0, basePath).replace(/^\//, "");
+  if (/^(data:|https?:)/i.test(raw0)) return raw0;
+  if (raw0.startsWith("/files/") || raw.startsWith("files/")) return normalizeDataPath(raw0);
 
   // If the reference is already a normal Foundry-static path, keep it.
   const top = (raw.split("/")[0] ?? "").toLowerCase();
@@ -372,6 +391,16 @@ function rewriteHtml(content, basePath, fileIndex) {
     // <img>
     for (const el of Array.from(doc.querySelectorAll("img"))) {
       if (el.hasAttribute("src")) el.setAttribute("src", fixUrl(el.getAttribute("src"), "page-image", true));
+      if (el.hasAttribute("srcset")) {
+        const srcset = String(el.getAttribute("srcset") ?? "");
+        const parts = srcset.split(",").map(p => p.trim()).filter(Boolean);
+        const fixedParts = parts.map(p => {
+          const m = p.match(/^(\S+)(\s+.+)?$/);
+          if (!m) return p;
+          return `${fixUrl(m[1], "page-image", true)}${m[2] ?? ""}`;
+        });
+        el.setAttribute("srcset", fixedParts.join(", "));
+      }
       for (const a of ["data-src", "data-lazy-src", "data-original"]) {
         if (el.hasAttribute(a)) el.setAttribute(a, fixUrl(el.getAttribute(a), "page-image", true));
       }
@@ -626,7 +655,53 @@ async function getImageDimensions(url) {
   });
 }
 
-function toNpc(mon, basePath, fileIndex, folderId) {
+async function resolveImagePathForDocument(basePath, fileIndex, rawPath, { kind = "generic", fallback = "icons/svg/item-bag.svg" } = {}) {
+  let resolved = resolveAssetPath(basePath, fileIndex, rawPath, { kind, allowNoExtension: true });
+  resolved = await ensureExtension(resolved, fileIndex);
+
+  if (resolved) {
+    const leaf = String(resolved).split("/").pop() ?? "";
+    if (!/\.[a-z0-9]{2,5}$/i.test(leaf)) {
+      const alt = resolveAssetPath(basePath, fileIndex, leaf, { kind, allowNoExtension: false });
+      if (alt) resolved = alt;
+    }
+  }
+
+  if (!hasValidImageExtension(resolved)) resolved = fallback;
+  return toFilesUrl(resolved) ?? resolved;
+}
+
+function pickFirst(...values) {
+  for (const v of values) {
+    if (v !== undefined && v !== null && `${v}` !== "") return v;
+  }
+  return null;
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null) return [];
+  return [value];
+}
+
+function parseActivationType(text = "") {
+  const s = String(text).toLowerCase();
+  if (!s) return "none";
+  if (/(^|\b)(bonus|action bonus|bonus action|action bonus)/.test(s)) return "bonus";
+  if (/(^|\b)(reaction|réaction)/.test(s)) return "reaction";
+  if (/(^|\b)(legendary|légendaire)/.test(s)) return "legendary";
+  if (/(^|\b)(lair|repaire)/.test(s)) return "lair";
+  if (/(^|\b)(action|attaque)/.test(s)) return "action";
+  return "none";
+}
+
+function parseTraitList(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
+  return String(v).split(/[;,\n]+/).map(x => x.trim()).filter(Boolean);
+}
+
+async function toNpc(mon, basePath, fileIndex, folderId) {
   const d = mon.data ?? {};
   const measurement = mon.attributes?.measurement ?? "";
   const ab = d.abilities ?? {};
@@ -646,19 +721,43 @@ function toNpc(mon, basePath, fileIndex, folderId) {
   };
 
   const items = [];
-  for (const a of (d.traits ?? [])) items.push(buildFeat(a.name ?? "Trait", a.text ?? ""));
-  for (const a of (d.actions ?? [])) items.push(buildFeat(a.name ?? "Action", a.text ?? ""));
-  for (const a of (d.reactions ?? [])) items.push(buildFeat(a.name ?? "Réaction", a.text ?? ""));
+  for (const a of (d.traits ?? [])) {
+    items.push({
+      ...buildFeat(a.name ?? "Trait", a.text ?? ""),
+      system: { description: { value: a.text ?? "" }, activation: { type: "none", cost: 0 } }
+    });
+  }
+  for (const a of (d.actions ?? [])) {
+    const text = a.text ?? "";
+    items.push({
+      ...buildFeat(a.name ?? "Action", text),
+      system: { description: { value: text }, activation: { type: parseActivationType(a.activation ?? "action"), cost: 1 } }
+    });
+  }
+  for (const a of (d.reactions ?? [])) {
+    const text = a.text ?? "";
+    items.push({
+      ...buildFeat(a.name ?? "Réaction", text),
+      system: { description: { value: text }, activation: { type: "reaction", cost: 1 } }
+    });
+  }
+  for (const a of (d.legendary ?? d.legendaryActions ?? [])) {
+    const text = a.text ?? "";
+    items.push({
+      ...buildFeat(a.name ?? "Légendaire", text),
+      system: { description: { value: text }, activation: { type: "legendary", cost: safeInt(a.cost, 1) } }
+    });
+  }
 
-  const tokenImgResolved = resolveAssetPath(basePath, fileIndex, mon.token, { kind: "monster-token", allowNoExtension: true });
-  const actorImgResolved = resolveAssetPath(basePath, fileIndex, mon.image, { kind: "monster-image", allowNoExtension: true });
-
-  let actorImg = actorImgResolved ?? tokenImgResolved;
-  let tokenImg = tokenImgResolved ?? actorImgResolved;
-
-  // Ensure Foundry validations are happy.
-  if (!hasValidImageExtension(actorImg)) actorImg = "icons/svg/mystery-man.svg";
-  if (!hasValidImageExtension(tokenImg)) tokenImg = actorImg;
+  let actorImg = await resolveImagePathForDocument(basePath, fileIndex, mon.image, {
+    kind: "monster-image",
+    fallback: "icons/svg/mystery-man.svg"
+  });
+  let tokenImg = await resolveImagePathForDocument(basePath, fileIndex, mon.token, {
+    kind: "monster-token",
+    fallback: actorImg
+  });
+  if (!tokenImg) tokenImg = actorImg;
 
 
   const sizeCode = String(d.size ?? "").toUpperCase();
@@ -708,7 +807,11 @@ function toNpc(mon, basePath, fileIndex, folderId) {
       },
       traits: {
         size,
-        languages: { custom: d.languages ?? "" }
+        languages: { custom: d.languages ?? "" },
+        di: { value: parseTraitList(d.damageImmunities ?? d.immunities), custom: "" },
+        dr: { value: parseTraitList(d.damageResistances ?? d.resistances), custom: "" },
+        dv: { value: parseTraitList(d.damageVulnerabilities ?? d.vulnerabilities), custom: "" },
+        ci: { value: parseTraitList(d.conditionImmunities), custom: "" }
       },
       ...(mappedSkills ? { skills: mappedSkills } : {})
     },
@@ -717,16 +820,28 @@ function toNpc(mon, basePath, fileIndex, folderId) {
   };
 }
 
-function toLootItem(it, basePath, fileIndex, folderId) {
-  const imgResolved = resolveAssetPath(basePath, fileIndex, it.image, { kind: "item-image", allowNoExtension: true });
-  const img = hasValidImageExtension(imgResolved) ? imgResolved : "icons/svg/item-bag.svg";
+async function toLootItem(it, basePath, fileIndex, folderId) {
+  const img = await resolveImagePathForDocument(basePath, fileIndex, it.image, {
+    kind: "item-image",
+    fallback: "icons/svg/item-bag.svg"
+  });
+  const quantity = safeInt(pickFirst(it.quantity, it.qty, it.count), 1);
+  const weight = safeFloat(pickFirst(it.weight, it.mass), 0);
+  const charges = safeInt(pickFirst(it.charges, it.uses?.max), 0);
+  const currentCharges = safeInt(pickFirst(it.uses?.value, charges), charges);
+  const priceValue = safeFloat(pickFirst(it.value, it.price, it.cost), 0);
+  const description = pickFirst(it.descr, it.description, "") ?? "";
   return {
     name: it.name ?? "Item",
     type: "loot",
     img,
     folder: folderId,
     system: {
-      description: { value: it.descr ?? "" }
+      description: { value: description },
+      quantity,
+      weight,
+      price: { value: priceValue, denomination: "gp" },
+      uses: { value: currentCharges, max: charges, per: "charges" }
     },
     flags: { [MODULE_ID]: { kind: "item", id: it.id, slug: it.slug } }
   };
@@ -767,7 +882,8 @@ async function toSceneAsync(map, basePath, fileIndex, folderId) {
       if (alt) bgPath = alt;
     }
   }
-  const bgSrc = (bgPath && hasValidMediaExtension(bgPath)) ? bgPath : null;
+  const bgSrc0 = (bgPath && hasValidMediaExtension(bgPath)) ? bgPath : null;
+  const bgSrc = bgSrc0 ? (toFilesUrl(bgSrc0) ?? bgSrc0) : null;
   const bgUrl = bgSrc ? toFilesUrl(bgSrc) : null;
   const gridSize = safeInt(map.gridSize, 100);
   const units = map.gridUnits ?? "ft";
@@ -806,6 +922,7 @@ async function toSceneAsync(map, basePath, fileIndex, folderId) {
     const h = safeInt(t.height, 0);
     const sc = safeFloat(t.scale, 1);
     if (w <= 0 || h <= 0) continue;
+    src = toFilesUrl(src) ?? src;
     tiles.push({
       x: safeInt(t.x, 0),
       y: safeInt(t.y, 0),
@@ -818,6 +935,25 @@ async function toSceneAsync(map, basePath, fileIndex, folderId) {
     });
   }
 
+  const walls = [];
+  for (const w of asArray(map.walls ?? map.lines ?? map.wallSegments)) {
+    const c = Array.isArray(w?.c)
+      ? w.c
+      : [pickFirst(w?.x, w?.x1), pickFirst(w?.y, w?.y1), pickFirst(w?.x2, w?.xEnd), pickFirst(w?.y2, w?.yEnd)];
+    const coords = c.map(v => safeInt(v, 0));
+    if (coords.length !== 4) continue;
+    if ((coords[0] === coords[2]) && (coords[1] === coords[3])) continue;
+    walls.push({
+      c: coords,
+      move: safeInt(w?.move, w?.movement ?? 20),
+      sight: safeInt(w?.sight, w?.vision ?? 20),
+      sound: safeInt(w?.sound, 20),
+      door: safeInt(w?.door, 0),
+      ds: safeInt(w?.ds, 0),
+      dir: safeInt(w?.dir, 0)
+    });
+  }
+
   return {
     name: map.name ?? "Map",
     folder: folderId,
@@ -825,6 +961,7 @@ async function toSceneAsync(map, basePath, fileIndex, folderId) {
     height,
     ...(bgSrc ? { background: { src: bgSrc } } : {}),
     tiles,
+    walls,
     grid: {
       size: gridSize,
       distance,
@@ -842,13 +979,19 @@ async function toSceneAsync(map, basePath, fileIndex, folderId) {
 function toRollTable(t, folderId) {
   const rows = t.rows ?? [];
   const formula = (t.rolls?.[0]?.formula) || `1d${Math.max(rows.length, 1)}`;
-  const results = rows.map((r, i) => ({
-    type: 0,
-    text: String(r?.[2] ?? r?.[0] ?? "").trim(),
-    range: [i+1, i+1],
-    weight: 1,
-    drawn: false
-  }));
+  const results = rows.map((r, i) => {
+    const min = safeInt(pickFirst(r?.range?.[0], r?.min, r?.from, i + 1), i + 1);
+    const max = safeInt(pickFirst(r?.range?.[1], r?.max, r?.to, min), min);
+    const text = String(pickFirst(r?.text, r?.[2], r?.result, r?.[0], "")).trim();
+    const weight = safeInt(pickFirst(r?.weight, 1), 1);
+    return {
+      type: 0,
+      text,
+      range: [min, Math.max(min, max)],
+      weight,
+      drawn: false
+    };
+  });
   return {
     name: t.name ?? "Table",
     folder: folderId,
@@ -940,7 +1083,7 @@ export async function runImport({ sourcePath, prefix = "Encounter+ Import", dest
   // Import Monsters
   for (const mon of monsters) {
     try {
-      await Actor.create(toNpc(mon, assetBase, fileIndex, fActor.id));
+      await Actor.create(await toNpc(mon, assetBase, fileIndex, fActor.id));
       summary.monsters++;
     } catch (e) {
       log("Monster import failed", mon?.name, e);
@@ -952,7 +1095,7 @@ export async function runImport({ sourcePath, prefix = "Encounter+ Import", dest
   // Import Items
   for (const it of items) {
     try {
-      await Item.create(toLootItem(it, assetBase, fileIndex, fItem.id));
+      await Item.create(await toLootItem(it, assetBase, fileIndex, fItem.id));
       summary.items++;
     } catch (e) {
       log("Item import failed", it?.name, e);
