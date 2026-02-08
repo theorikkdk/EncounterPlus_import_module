@@ -718,17 +718,99 @@ function toNpc(mon, basePath, fileIndex, folderId) {
 }
 
 function toLootItem(it, basePath, fileIndex, folderId) {
+  const raw = (it?.data && typeof it.data === "object") ? { ...it.data, ...it } : (it ?? {});
+  const s = (v) => String(v ?? "").trim();
+  const n = (v, fb = 0) => {
+    const x = safeFloat(v, NaN);
+    return Number.isFinite(x) ? x : fb;
+  };
+  const first = (...vals) => vals.find(v => v !== undefined && v !== null && String(v).trim() !== "");
+
+  const rawType = s(first(raw.type, raw.itemType, raw.category, raw.subtype, raw.kind)).toLowerCase();
+  const tags = Array.isArray(raw.tags) ? raw.tags.map(t => s(t).toLowerCase()) : [];
+  const nameLc = s(raw.name).toLowerCase();
+
+  const hasAny = (...needles) => needles.some(k => rawType.includes(k) || nameLc.includes(k) || tags.some(t => t.includes(k)));
+
+  const docType = hasAny("weapon", "arme", "sword", "bow", "dagger", "axe", "mace", "hammer")
+    ? "weapon"
+    : hasAny("armor", "armour", "shield", "bouclier", "armure")
+      ? "equipment"
+      : hasAny("potion", "scroll", "wand", "consumable", "ammo", "poison", "rations")
+        ? "consumable"
+        : hasAny("tool", "kit", "instrument", "outil")
+          ? "tool"
+          : hasAny("backpack", "bag", "sac", "container", "pouch", "coffre")
+            ? "backpack"
+            : "loot";
+
+  const rawSubtype = s(first(raw.subtype, raw.itemSubType, raw.equipmentType, raw.weaponType, rawType));
+  const rarityRaw = s(first(raw.rarity, raw.tier, raw.quality)).toLowerCase();
+  const rarity = ({
+    common: "common",
+    uncommon: "uncommon",
+    rare: "rare",
+    "very rare": "veryRare",
+    veryrare: "veryRare",
+    legendary: "legendary",
+    artifact: "artifact"
+  })[rarityRaw] ?? "";
+
+  const chargesMax = Math.max(0, safeInt(first(raw.charges, raw.maxCharges, raw.uses), 0));
+  const chargesSpent = Math.min(chargesMax, Math.max(0, safeInt(first(raw.chargesSpent, raw.usedCharges, raw.usesSpent), 0)));
+  const attunementRaw = s(first(raw.attunement, raw.requiresAttunement)).toLowerCase();
+  const attunement = (attunementRaw === "required" || attunementRaw === "yes" || attunementRaw === "true" || attunementRaw === "1") ? 1 : 0;
+
+  const nameBonus = s(raw.name).match(/\+\s*(\d+)/);
+  const explicitBonus = safeInt(first(raw.modifier, raw.bonus, raw.magicBonus), NaN);
+  const magicalBonus = Number.isFinite(explicitBonus) ? explicitBonus : safeInt(nameBonus?.[1], 0);
+
+  const quantity = Math.max(1, safeInt(first(raw.quantity, raw.count, raw.qty), 1));
+  const weight = Math.max(0, n(first(raw.weight, raw.mass), 0));
+  const priceValue = Math.max(0, n(first(raw.value, raw.price, raw.cost), 0));
+
   const imgResolved = resolveAssetPath(basePath, fileIndex, it.image, { kind: "item-image", allowNoExtension: true });
   const img = hasValidImageExtension(imgResolved) ? imgResolved : "icons/svg/item-bag.svg";
+
+  const system = {
+    description: { value: first(raw.descr, raw.description, raw.text, "") ?? "" },
+    quantity,
+    weight,
+    price: { value: priceValue, denomination: "gp" },
+    rarity,
+    attunement,
+    identified: true
+  };
+
+  if (rawSubtype) system.type = { value: rawSubtype.toLowerCase(), subtype: "" };
+  if (chargesMax > 0) {
+    system.uses = {
+      max: String(chargesMax),
+      spent: chargesSpent,
+      recovery: [{ period: "lr", type: "recoverAll" }]
+    };
+  }
+  if (magicalBonus !== 0 && (docType === "weapon" || docType === "equipment")) {
+    system.magicalBonus = magicalBonus;
+  }
+
   return {
-    name: it.name ?? "Item",
-    type: "loot",
+    name: raw.name ?? "Item",
+    type: docType,
     img,
     folder: folderId,
-    system: {
-      description: { value: it.descr ?? "" }
-    },
-    flags: { [MODULE_ID]: { kind: "item", id: it.id, slug: it.slug } }
+    system,
+    flags: {
+      [MODULE_ID]: {
+        kind: "item",
+        id: raw.id,
+        slug: raw.slug,
+        sourceType: rawType,
+        sourceSubtype: rawSubtype,
+        sourceCharges: chargesMax,
+        sourceMagicalBonus: magicalBonus
+      }
+    }
   };
 }
 
