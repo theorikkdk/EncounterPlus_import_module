@@ -61,6 +61,39 @@ function hasValidImageExtension(path) {
   return /\.(webp|png|jpe?g|gif|bmp|svg)$/i.test(s);
 }
 
+function sanitizeAssetRef(value) {
+  if (!value) return "";
+  let s = String(value).trim();
+  if (!s) return "";
+
+  // Strip surrounding quotes often found in HTML/CSS attributes.
+  s = s.replace(/^['"]+|['"]+$/g, "");
+
+  // Remove hash/query noise to make basename matching deterministic.
+  const q = s.indexOf("?");
+  const h = s.indexOf("#");
+  const cut = (q >= 0 && h >= 0) ? Math.min(q, h) : (q >= 0 ? q : h);
+  if (cut >= 0) s = s.slice(0, cut);
+
+  // Decode URL-encoded names when possible (e.g. "Red%20Dragon.webp").
+  try { s = decodeURIComponent(s); } catch (e) {}
+
+  return s.replace(/\\/g, "/");
+}
+
+function collapseRelativeSegments(p) {
+  const out = [];
+  for (const seg of String(p ?? "").split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (out.length) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join("/");
+}
+
 
 function normalizeDataPath(s) {
   if (!s) return null;
@@ -247,9 +280,9 @@ async function ensureExtension(dataPath, fileIndex) {
 
 function resolveAssetPath(basePath, fileIndex, name, { kind = "generic", allowNoExtension = false } = {}) {
   if (!name) return null;
-  const raw0 = String(name).trim();
+  const raw0 = sanitizeAssetRef(name);
   if (!raw0) return null;
-  const raw = raw0.replace(/\\/g, "/").replace(/^\//, "");
+  const raw = collapseRelativeSegments(raw0.replace(/^\//, ""));
   if (/^(data:|https?:)/i.test(raw)) return raw;
   if (raw.startsWith("/files/")) return normalizeDataPath(raw);
 
@@ -276,6 +309,16 @@ function resolveAssetPath(basePath, fileIndex, name, { kind = "generic", allowNo
     }
     return bestCandidate(cands, kind);
   }
+
+  // Try again with just the basename from URL-like refs if needed.
+  try {
+    const u = new URL(raw0, window.location.origin);
+    const urlLeaf = sanitizeAssetRef(u.pathname.split("/").pop() ?? "");
+    if (urlLeaf && urlLeaf !== leaf) {
+      const byLeaf = indexGet(fileIndex, urlLeaf);
+      if (byLeaf?.length) return bestCandidate(byLeaf, kind);
+    }
+  } catch (e) {}
 
   // 2) If the reference has an extension but we didn't find it (common: Encounter+ says .jpg but file is .webp),
   // try resolving by stem and by common extensions.
@@ -626,7 +669,7 @@ async function getImageDimensions(url) {
   });
 }
 
-function toNpc(mon, basePath, fileIndex, folderId) {
+async function toNpc(mon, basePath, fileIndex, folderId) {
   const d = mon.data ?? {};
   const measurement = mon.attributes?.measurement ?? "";
   const ab = d.abilities ?? {};
@@ -650,8 +693,12 @@ function toNpc(mon, basePath, fileIndex, folderId) {
   for (const a of (d.actions ?? [])) items.push(buildFeat(a.name ?? "Action", a.text ?? ""));
   for (const a of (d.reactions ?? [])) items.push(buildFeat(a.name ?? "Réaction", a.text ?? ""));
 
-  const tokenImgResolved = resolveAssetPath(basePath, fileIndex, mon.token, { kind: "monster-token", allowNoExtension: true });
-  const actorImgResolved = resolveAssetPath(basePath, fileIndex, mon.image, { kind: "monster-image", allowNoExtension: true });
+  let tokenImgResolved = resolveAssetPath(basePath, fileIndex, mon.token, { kind: "monster-token", allowNoExtension: true });
+  let actorImgResolved = resolveAssetPath(basePath, fileIndex, mon.image, { kind: "monster-image", allowNoExtension: true });
+
+  // Encounter+ sometimes ships extensionless file references for monsters/tokens.
+  tokenImgResolved = await ensureExtension(tokenImgResolved, fileIndex);
+  actorImgResolved = await ensureExtension(actorImgResolved, fileIndex);
 
   let actorImg = actorImgResolved ?? tokenImgResolved;
   let tokenImg = tokenImgResolved ?? actorImgResolved;
@@ -940,7 +987,7 @@ export async function runImport({ sourcePath, prefix = "Encounter+ Import", dest
   // Import Monsters
   for (const mon of monsters) {
     try {
-      await Actor.create(toNpc(mon, assetBase, fileIndex, fActor.id));
+      await Actor.create(await toNpc(mon, assetBase, fileIndex, fActor.id));
       summary.monsters++;
     } catch (e) {
       log("Monster import failed", mon?.name, e);
