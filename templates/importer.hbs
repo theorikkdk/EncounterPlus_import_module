@@ -1,0 +1,36 @@
+<div class="epi">
+  <p class="epi-help">{{localize "EPI.Help"}}</p>
+
+  <div class="epi-row">
+    <label>{{localize "EPI.SourcePath"}}</label>
+    <div class="epi-grow">
+      <input type="text" name="sourcePath" value="{{sourcePath}}" placeholder="encounter-source/la-mine-oubliee-de-phancreux" />
+    </div>
+    <button type="button" data-action="browse"><i class="fas fa-folder-open"></i></button>
+  </div>
+
+  <div class="epi-row">
+    <label>{{localize "EPI.Prefix"}}</label>
+    <div class="epi-grow">
+      <input type="text" name="prefix" value="{{prefix}}" />
+    </div>
+  </div>
+
+  <div class="epi-row">
+    <label>{{localize "EPI.Destination"}}</label>
+    <div class="epi-grow">
+      <select name="destination">
+        <option value="world" {{#if (eq destination "world")}}selected{{/if}}>{{localize "EPI.DestWorld"}}</option>
+        <option value="compendiums" {{#if (eq destination "compendiums")}}selected{{/if}} disabled>{{localize "EPI.DestCompendiumSoon"}}</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="epi-actions">
+    <button type="button" data-action="test"><i class="fas fa-vial"></i> {{localize "EPI.Test"}}</button>
+    <button type="button" data-action="import" class="epi-primary"><i class="fas fa-file-import"></i> {{localize "EPI.Import"}}</button>
+    <button type="button" data-action="repairJournals"><i class="fas fa-wrench"></i> {{localize "EPI.RepairJournals"}}</button>
+  </div>
+
+  <p class="epi-note">{{localize "EPI.Note"}}</p>
+</div>
