@@ -391,6 +391,16 @@ function rewriteHtml(content, basePath, fileIndex) {
     // <img>
     for (const el of Array.from(doc.querySelectorAll("img"))) {
       if (el.hasAttribute("src")) el.setAttribute("src", fixUrl(el.getAttribute("src"), "page-image", true));
+      if (el.hasAttribute("srcset")) {
+        const srcset = String(el.getAttribute("srcset") ?? "");
+        const parts = srcset.split(",").map(p => p.trim()).filter(Boolean);
+        const fixedParts = parts.map(p => {
+          const m = p.match(/^(\S+)(\s+.+)?$/);
+          if (!m) return p;
+          return `${fixUrl(m[1], "page-image", true)}${m[2] ?? ""}`;
+        });
+        el.setAttribute("srcset", fixedParts.join(", "));
+      }
       for (const a of ["data-src", "data-lazy-src", "data-original"]) {
         if (el.hasAttribute(a)) el.setAttribute(a, fixUrl(el.getAttribute(a), "page-image", true));
       }
@@ -645,6 +655,22 @@ async function getImageDimensions(url) {
   });
 }
 
+async function resolveImagePathForDocument(basePath, fileIndex, rawPath, { kind = "generic", fallback = "icons/svg/item-bag.svg" } = {}) {
+  let resolved = resolveAssetPath(basePath, fileIndex, rawPath, { kind, allowNoExtension: true });
+  resolved = await ensureExtension(resolved, fileIndex);
+
+  if (resolved) {
+    const leaf = String(resolved).split("/").pop() ?? "";
+    if (!/\.[a-z0-9]{2,5}$/i.test(leaf)) {
+      const alt = resolveAssetPath(basePath, fileIndex, leaf, { kind, allowNoExtension: false });
+      if (alt) resolved = alt;
+    }
+  }
+
+  if (!hasValidImageExtension(resolved)) resolved = fallback;
+  return toFilesUrl(resolved) ?? resolved;
+}
+
 function pickFirst(...values) {
   for (const v of values) {
     if (v !== undefined && v !== null && `${v}` !== "") return v;
@@ -675,7 +701,7 @@ function parseTraitList(v) {
   return String(v).split(/[;,\n]+/).map(x => x.trim()).filter(Boolean);
 }
 
-function toNpc(mon, basePath, fileIndex, folderId) {
+async function toNpc(mon, basePath, fileIndex, folderId) {
   const d = mon.data ?? {};
   const measurement = mon.attributes?.measurement ?? "";
   const ab = d.abilities ?? {};
@@ -723,17 +749,15 @@ function toNpc(mon, basePath, fileIndex, folderId) {
     });
   }
 
-  const tokenImgResolved = resolveAssetPath(basePath, fileIndex, mon.token, { kind: "monster-token", allowNoExtension: true });
-  const actorImgResolved = resolveAssetPath(basePath, fileIndex, mon.image, { kind: "monster-image", allowNoExtension: true });
-
-  let actorImg = actorImgResolved ?? tokenImgResolved;
-  let tokenImg = tokenImgResolved ?? actorImgResolved;
-
-  // Ensure Foundry validations are happy.
-  if (!hasValidImageExtension(actorImg)) actorImg = "icons/svg/mystery-man.svg";
-  if (!hasValidImageExtension(tokenImg)) tokenImg = actorImg;
-  actorImg = toFilesUrl(actorImg) ?? actorImg;
-  tokenImg = toFilesUrl(tokenImg) ?? tokenImg;
+  let actorImg = await resolveImagePathForDocument(basePath, fileIndex, mon.image, {
+    kind: "monster-image",
+    fallback: "icons/svg/mystery-man.svg"
+  });
+  let tokenImg = await resolveImagePathForDocument(basePath, fileIndex, mon.token, {
+    kind: "monster-token",
+    fallback: actorImg
+  });
+  if (!tokenImg) tokenImg = actorImg;
 
 
   const sizeCode = String(d.size ?? "").toUpperCase();
@@ -796,10 +820,11 @@ function toNpc(mon, basePath, fileIndex, folderId) {
   };
 }
 
-function toLootItem(it, basePath, fileIndex, folderId) {
-  const imgResolved = resolveAssetPath(basePath, fileIndex, it.image, { kind: "item-image", allowNoExtension: true });
-  const img0 = hasValidImageExtension(imgResolved) ? imgResolved : "icons/svg/item-bag.svg";
-  const img = toFilesUrl(img0) ?? img0;
+async function toLootItem(it, basePath, fileIndex, folderId) {
+  const img = await resolveImagePathForDocument(basePath, fileIndex, it.image, {
+    kind: "item-image",
+    fallback: "icons/svg/item-bag.svg"
+  });
   const quantity = safeInt(pickFirst(it.quantity, it.qty, it.count), 1);
   const weight = safeFloat(pickFirst(it.weight, it.mass), 0);
   const charges = safeInt(pickFirst(it.charges, it.uses?.max), 0);
@@ -1058,7 +1083,7 @@ export async function runImport({ sourcePath, prefix = "Encounter+ Import", dest
   // Import Monsters
   for (const mon of monsters) {
     try {
-      await Actor.create(toNpc(mon, assetBase, fileIndex, fActor.id));
+      await Actor.create(await toNpc(mon, assetBase, fileIndex, fActor.id));
       summary.monsters++;
     } catch (e) {
       log("Monster import failed", mon?.name, e);
@@ -1070,7 +1095,7 @@ export async function runImport({ sourcePath, prefix = "Encounter+ Import", dest
   // Import Items
   for (const it of items) {
     try {
-      await Item.create(toLootItem(it, assetBase, fileIndex, fItem.id));
+      await Item.create(await toLootItem(it, assetBase, fileIndex, fItem.id));
       summary.items++;
     } catch (e) {
       log("Item import failed", it?.name, e);
