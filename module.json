@@ -1,25 +1,20 @@
 {
   "id": "encounterplus-importer",
   "title": "Encounter+ Importer",
-  "description": "Importe des exports Encounter+ (JSON) vers Foundry VTT (v13) avec résolution robuste des images (journaux inclus, unicode/casse/accents).",
-  "version": "0.9.1",
+  "description": "Importe des exports Encounter+ (JSON) vers Foundry VTT avec résolution robuste des images (journaux inclus, unicode/casse/accents).",
+  "version": "0.9.3",
   "authors": [
     {
       "name": "ChatGPT"
     }
   ],
   "compatibility": {
-    "minimum": "13",
+    "minimum": "10",
     "verified": "13"
   },
-  "relationships": {
-    "systems": [
-      {
-        "id": "dnd5e",
-        "type": "system"
-      }
-    ]
-  },
+  "minimumCoreVersion": "10",
+  "compatibleCoreVersion": "13",
+  "manifestVersion": 1,
   "esmodules": [
     "scripts/main.mjs"
   ],
