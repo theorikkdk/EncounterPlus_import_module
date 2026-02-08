@@ -1,7 +1,0 @@
-.epi { display: flex; flex-direction: column; gap: 10px; }
-.epi-row { display: flex; align-items: center; gap: 8px; }
-.epi-row label { width: 180px; opacity: 0.9; }
-.epi-grow { flex: 1; }
-.epi-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
-.epi-primary { font-weight: 700; }
-.epi-help, .epi-note { opacity: 0.85; margin: 0; }
